@@ -18,6 +18,14 @@ createServer((req, res) => {
   req.on("end", () => {
     const b = JSON.parse(body || "{}");
     const openai = req.url.includes("chat/completions");
+    // Behave like Gemini 3: every function call we returned must come back with its thought signature.
+    if (openai) {
+      const unsigned = b.messages.flatMap((m) => m.tool_calls ?? []).filter((c) => !c.extra_content?.google?.thought_signature);
+      if (unsigned.length) {
+        res.writeHead(400, { "content-type": "application/json" });
+        return res.end(JSON.stringify([{ error: { code: 400, message: "Function call is missing a thought_signature in functionCall parts.", status: "INVALID_ARGUMENT" } }]));
+      }
+    }
     // MOCK_HANG=model → never answer for that model (tests time limits)
     if (openai && (process.env.MOCK_HANG || "").split(",").includes(b.model)) return;
     // MOCK_UNAVAILABLE=model1,model2 → answer 503 for those models (tests fallback)
@@ -60,7 +68,8 @@ createServer((req, res) => {
         finish_reason: tc.length ? "tool_calls" : "stop",
         message: { role: "assistant", content: out.content.filter((c) => c.type === "text").map((c) => c.text).join("\n") || null,
           ...(tc.length ? { tool_calls: tc.map((c) => ({ id: c.id, type: "function",
-            function: { name: c.name, arguments: JSON.stringify(c.input) } })) } : {}) } }] };
+            function: { name: c.name, arguments: JSON.stringify(c.input) },
+            extra_content: { google: { thought_signature: `sig-${c.id}` } } })) } : {}) } }] };
     }
     res.end(JSON.stringify(out));
   });

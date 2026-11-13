@@ -20,11 +20,13 @@ export const provider = (): "gemini" | "anthropic" | null =>
 // ------------------------------------------------------------------ Anthropic
 async function anthropic(req: LlmRequest): Promise<LlmResponse> {
   const client = new Anthropic();
+  const messages = req.messages.map((m) => typeof m.content === "string" ? m : {
+    ...m, content: m.content.map(({ _thought_signature, ...b }) => b) });
   const tools = req.tools.map((t, i) => (i === req.tools.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t));
   try {
     const r = await client.messages.create({
       model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
-      max_tokens: req.max_tokens, system: req.system, tools: tools as never, messages: req.messages as never,
+      max_tokens: req.max_tokens, system: req.system, tools: tools as never, messages: messages as never,
     });
     return { content: r.content as unknown as Block[], stop_reason: r.stop_reason };
   } catch (e) {
@@ -59,6 +61,9 @@ function toOpenAI(req: LlmRequest) {
       const text = m.content.filter((b) => b.type === "text").map((b) => b.text as string).join("\n");
       const calls = m.content.filter((b) => b.type === "tool_use").map((b) => ({
         id: b.id, type: "function", function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+        // Gemini 3 requires each function call's thought signature to be echoed back. When we don't
+        // have one (call made by another model), Google documents this placeholder to skip validation.
+        extra_content: { google: { thought_signature: (b._thought_signature as string) || "skip_thought_signature_validator" } },
       }));
       msgs.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
     } else {
@@ -77,14 +82,17 @@ function toOpenAI(req: LlmRequest) {
 }
 
 let callSeq = 0;
-function fromOpenAI(data: { choices?: { message?: { content?: string | null; tool_calls?: { id?: string; function: { name: string; arguments: string } }[] }; finish_reason?: string }[] }): LlmResponse {
+type OaToolCall = { id?: string; function: { name: string; arguments: string }; extra_content?: { google?: { thought_signature?: string } } };
+function fromOpenAI(data: { choices?: { message?: { content?: string | null; tool_calls?: OaToolCall[] }; finish_reason?: string }[] }): LlmResponse {
   const msg = data.choices?.[0]?.message ?? {};
   const content: Block[] = [];
   if (msg.content) content.push({ type: "text", text: msg.content });
   for (const c of msg.tool_calls ?? []) {
     let input: unknown = {};
     try { input = JSON.parse(c.function.arguments || "{}"); } catch { input = {}; }
-    content.push({ type: "tool_use", id: c.id || `call_${Date.now()}_${++callSeq}`, name: c.function.name, input });
+    const sig = c.extra_content?.google?.thought_signature;
+    content.push({ type: "tool_use", id: c.id || `call_${Date.now()}_${++callSeq}`, name: c.function.name, input,
+      ...(sig ? { _thought_signature: sig } : {}) });
   }
   return { content, stop_reason: (msg.tool_calls?.length ?? 0) > 0 ? "tool_use" : "end_turn" };
 }
