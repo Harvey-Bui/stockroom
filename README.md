@@ -7,13 +7,13 @@ A web app for the kitchen. It shows inventory and deliveries, and has a chat ass
 - **Activity log** (managers): every change Basil was asked to make, including cancelled and rejected ones.
 - **Basil**: a chat panel on every page (full-screen on phones), with suggested questions to start from.
 
-Stack: Next.js 16 on Vercel · Neon Postgres · Claude via the Anthropic API.
+Stack: Next.js 16 on Vercel · Neon Postgres · Google Gemini (free tier) or Claude.
 
 ---
 
 ## Deploy to Vercel
 
-You need three free accounts: **Vercel**, **Anthropic Console** (for the API key, with a few dollars of credit), and Neon, which Vercel creates for you in step 3.
+You need free accounts with **Vercel** and **Google** (for a free Gemini key, no card). Neon is created for you by Vercel in step 3.
 
 ### 1. Install the tools
 Install Node.js 20 or newer from nodejs.org. Then open a terminal in this folder:
@@ -36,7 +36,7 @@ Go to **Settings → Environment Variables** and add each of these for **Product
 
 | Name | Value |
 |---|---|
-| `ANTHROPIC_API_KEY` | your key from console.anthropic.com (starts `sk-ant-api…`) |
+| `GEMINI_API_KEY` | free key from **aistudio.google.com/apikey** (starts `AIza…`). Or set `ANTHROPIC_API_KEY` instead to use Claude. |
 | `SESSION_SECRET` | random text, 32+ characters. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `STAFF_PASSCODE` | the passcode kitchen staff will sign in with (8+ characters) |
 | `MANAGER_PASSCODE` | the passcode managers will sign in with (different from staff) |
@@ -58,7 +58,7 @@ The build creates the tables, loads the spreadsheet data on the first run, and s
 ## How the assistant stays accurate and safe
 
 ```
-message ─► /api/chat ─► Claude (role-aware system prompt + schema + live data summary)
+message ─► /api/chat ─► Gemini or Claude (role-aware system prompt + schema + live data summary)
                           │ query_inventory(sql) ─► role's READ-ONLY database login ─► rows
                           │ record_* / set_*     ─► validate ─► Approve/Cancel card ─► write + audit row
                           ▼
@@ -101,11 +101,11 @@ npm run dev                     # http://localhost:3000
 ```
 
 ### Tests
-`tests/e2e.mjs` runs 13 end-to-end checks against a running app. It uses `tests/mock-anthropic.mjs`, a scripted stand-in for the Claude API, so no key is needed. The checks cover logins, role-filtered pages, SQL injection attempts, the approve/cancel flow, chat privacy and the audit log. **Use a throwaway database**, because the tests record counts.
+`tests/e2e.mjs` runs 13 end-to-end checks against a running app. It uses `tests/mock-anthropic.mjs`, a scripted stand-in for both the Claude API and Gemini's OpenAI-compatible endpoint, so no key is needed. The checks cover logins, role-filtered pages, SQL injection attempts, the approve/cancel flow, chat privacy and the audit log. **Use a throwaway database**, because the tests record counts.
 
 ```
 node tests/mock-anthropic.mjs &
-ANTHROPIC_BASE_URL=http://127.0.0.1:4010 npm run build && ANTHROPIC_BASE_URL=http://127.0.0.1:4010 npm start &
+GEMINI_API_KEY=x GEMINI_BASE_URL=http://127.0.0.1:4010 npm run build && GEMINI_API_KEY=x GEMINI_BASE_URL=http://127.0.0.1:4010 npm start &
 BASE=http://127.0.0.1:3000 STAFF_PASSCODE=… MANAGER_PASSCODE=… node --test tests/e2e.mjs
 ```
 
@@ -117,6 +117,7 @@ BASE=http://127.0.0.1:3000 STAFF_PASSCODE=… MANAGER_PASSCODE=… node --test t
 | `scripts/setup.mjs` | Idempotent setup: schema, seed (empty DB only), read-only logins and grants. Runs before every build. |
 | `lib/tools.ts` | Read tool and the typed write actions (validate → apply + audit) |
 | `lib/agent.ts` | System prompt, tool definitions, tool loop, and the pending-approval flow |
+| `lib/llm.ts` | Model adapter: Gemini (OpenAI-compatible endpoint) or Claude, chosen by which key is set |
 | `lib/db.ts`, `lib/session.ts`, `lib/config.ts` | Connections, signed sessions, settings |
 | `app/(app)/…` | Inventory, Deliveries and Activity pages |
 | `components/Assistant.tsx` | The Basil chat panel |
@@ -124,5 +125,6 @@ BASE=http://127.0.0.1:3000 STAFF_PASSCODE=… MANAGER_PASSCODE=… node --test t
 ## Good next steps
 - **Per-person logins**: shared passcodes are fine to start with. For real staff accounts, swap `lib/session.ts` for Clerk or Auth.js; nothing else needs to change.
 - **Rate limiting** on `/api/login` and `/api/chat` (Vercel Firewall rules or Upstash).
+- **Free-tier limits**: Gemini's free tier caps requests per minute and per day, and Google may use free-tier prompts to improve its products. For real use, add billing in AI Studio or switch to `ANTHROPIC_API_KEY`.
 - **Usage from the POS**: import daily sales × recipe quantities as `usage` records, so "enough for N days" and reorder suggestions work on their own.
 - **Streaming replies**, so long answers appear word by word.

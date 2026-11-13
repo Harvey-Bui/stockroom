@@ -1,7 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "node:crypto";
 import { config } from "./config";
 import { ownerDb } from "./db";
+import { createMessage, type Block, type Message } from "./llm";
 import type { Session } from "./session";
 import {
   ROLE_WRITES, applyWrite, dataProfile, describeSchema, logAudit, prepareWrite, runReadQuery, type Actor,
@@ -10,8 +10,6 @@ import {
 const MAX_ROUNDS = 10;
 const PENDING_TTL_MINUTES = 15;
 
-type Block = Record<string, unknown> & { type: string };
-type Message = { role: "user" | "assistant"; content: string | Block[] };
 
 export type Pending = { id: string; action: string; summary: string };
 export type AgentReply = {
@@ -22,11 +20,6 @@ export type AgentReply = {
   applied?: { summary: string; status: "applied" | "declined" | "rejected" | "expired" };
 };
 
-// Injectable for tests.
-type Client = { messages: { create: (body: Record<string, unknown>) => Promise<{ content: Block[]; stop_reason: string | null }> } };
-let clientOverride: Client | null = null;
-export const __setClient = (c: Client | null) => { clientOverride = c; };
-const client = (): Client => clientOverride ?? (new Anthropic() as unknown as Client);
 
 // --------------------------------------------------------------------------- prompt + tools
 
@@ -131,7 +124,7 @@ function tools(role: Session["role"]) {
     },
   };
   const names = ["query_inventory", ...ROLE_WRITES[role]];
-  return names.map((name, i) => ({ name, ...all[name], ...(i === names.length - 1 ? { cache_control: { type: "ephemeral" } } : {}) }));
+  return names.map((name) => ({ name, ...all[name] }));
 }
 
 // --------------------------------------------------------------------------- conversation storage
@@ -162,9 +155,7 @@ async function runLoop(convId: string, messages: Message[], s: Session, reply: A
   const system = systemPrompt(s, schema, profile);
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    const resp = await client().messages.create({
-      model: config.model, max_tokens: 2048, system, tools: tools(s.role), messages,
-    });
+    const resp = await createMessage({ max_tokens: 2048, system, tools: tools(s.role), messages });
     const content = resp.content.map((b) => ({ ...b })) as Block[];
     messages.push({ role: "assistant", content });
 

@@ -21,7 +21,9 @@ export async function POST(req: Request) {
 
 function friendly(e: unknown) {
   const msg = (e as { status?: number; message?: string });
-  if (msg.status === 401) return "The AI service rejected the API key. Check ANTHROPIC_API_KEY in Vercel.";
-  if (msg.status === 429 || msg.status === 529) return "The assistant is busy right now. Try again in a moment.";
+  if (msg.status === 400 && /API key|API_KEY/i.test(msg.message ?? "")) return "The AI service rejected the API key. Check GEMINI_API_KEY in Vercel.";
+  if (msg.status === 401 || msg.status === 403) return "The AI service rejected the API key. Check GEMINI_API_KEY in Vercel.";
+  if (msg.status === 429) return "The free AI quota is used up for the moment. Wait a minute (or until tomorrow if the daily limit is reached) and try again.";
+  if (msg.status === 529 || msg.status === 503) return "The assistant is busy right now. Try again in a moment.";
   return "Something went wrong talking to the assistant. Try again.";
 }

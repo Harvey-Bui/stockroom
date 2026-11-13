@@ -15,7 +15,6 @@ export const config = {
   databaseUrl: findDbUrl(),
   sessionSecret: process.env.SESSION_SECRET ?? "",
   timezone: process.env.APP_TIMEZONE || "America/Chicago",
-  model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
   restaurantName: process.env.RESTAURANT_NAME || "Our Kitchen",
   passcodes: {
     staff: process.env.STAFF_PASSCODE ?? "",
@@ -28,7 +27,7 @@ export function requireConfig() {
   const missing: string[] = [];
   if (!config.databaseUrl) missing.push("DATABASE_URL");
   if (config.sessionSecret.length < 32) missing.push("SESSION_SECRET (32+ chars)");
-  if (!process.env.ANTHROPIC_API_KEY) missing.push("ANTHROPIC_API_KEY");
+  if (!process.env.GEMINI_API_KEY && !process.env.ANTHROPIC_API_KEY) missing.push("GEMINI_API_KEY (free from aistudio.google.com/apikey)");
   if (!config.passcodes.staff && !config.passcodes.manager) missing.push("STAFF_PASSCODE / MANAGER_PASSCODE");
   return missing;
 }

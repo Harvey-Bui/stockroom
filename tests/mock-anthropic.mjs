@@ -1,4 +1,5 @@
-// Scripted stand-in for the Anthropic Messages API, for end-to-end tests without a key.
+// Scripted stand-in for the Anthropic Messages API and Gemini's OpenAI-compatible
+// /chat/completions endpoint, for end-to-end tests without a key.
 //   "SQL: <query>"           -> model calls query_inventory with that SQL
 //   "WRITE: <tool> <json>"   -> model calls that write tool
 //   anything else            -> plain text reply
@@ -16,11 +17,22 @@ createServer((req, res) => {
   req.on("data", (c) => (body += c));
   req.on("end", () => {
     const b = JSON.parse(body || "{}");
-    writeFileSync("/tmp/mock-last-request.json", JSON.stringify(b, null, 1));
-    const last = b.messages.at(-1);
-    const blocks = typeof last.content === "string" ? [{ type: "text", text: last.content }] : last.content;
-    const text = blocks.filter((x) => x.type === "text").map((x) => x.text).join("\n");
-    const results = blocks.filter((x) => x.type === "tool_result");
+    const openai = req.url.includes("chat/completions");
+    let text, results;
+    if (openai) {
+      // Normalise to: trailing tool messages = results, trailing user message = text
+      const tail = [];
+      for (let i = b.messages.length - 1; i >= 0 && b.messages[i].role !== "assistant"; i--) tail.unshift(b.messages[i]);
+      results = tail.filter((m) => m.role === "tool").map((m) => ({ content: m.content }));
+      text = tail.filter((m) => m.role === "user").map((m) => m.content).join("\n");
+      writeFileSync("/tmp/mock-last-request.json", JSON.stringify({ system: b.messages[0].content, messages: b.messages, model: b.model }, null, 1));
+    } else {
+      writeFileSync("/tmp/mock-last-request.json", JSON.stringify(b, null, 1));
+      const last = b.messages.at(-1);
+      const blocks = typeof last.content === "string" ? [{ type: "text", text: last.content }] : last.content;
+      text = blocks.filter((x) => x.type === "text").map((x) => x.text).join("\n");
+      results = blocks.filter((x) => x.type === "tool_result");
+    }
     let out;
     if (text.startsWith("SQL:")) {
       out = reply([{ type: "text", text: "Checking." }, { type: "tool_use", id: `tu_${n}`, name: "query_inventory",
@@ -35,6 +47,14 @@ createServer((req, res) => {
       out = reply([{ type: "text", text: `echo: ${text}` }], "end_turn");
     }
     res.writeHead(200, { "content-type": "application/json" });
+    if (openai) {
+      const tc = out.content.filter((c) => c.type === "tool_use");
+      out = { id: out.id, object: "chat.completion", model: b.model, choices: [{ index: 0,
+        finish_reason: tc.length ? "tool_calls" : "stop",
+        message: { role: "assistant", content: out.content.filter((c) => c.type === "text").map((c) => c.text).join("\n") || null,
+          ...(tc.length ? { tool_calls: tc.map((c) => ({ id: c.id, type: "function",
+            function: { name: c.name, arguments: JSON.stringify(c.input) } })) } : {}) } }] };
+    }
     res.end(JSON.stringify(out));
   });
 }).listen(port, () => console.log(`mock anthropic on :${port}`));
