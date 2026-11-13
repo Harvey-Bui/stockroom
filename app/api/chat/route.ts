@@ -15,8 +15,14 @@ export async function POST(req: Request) {
     return NextResponse.json(await chat(s, body.conversationId || undefined, message));
   } catch (e) {
     console.error("chat failed", e);
-    return NextResponse.json({ error: friendly(e) }, { status: 500 });
+    return NextResponse.json({ error: friendly(e) + detail(e) }, { status: 500 });
   }
+}
+
+function detail(e: unknown) {
+  const m = (e as { message?: string }).message ?? "";
+  // Gemini/Anthropic error text never contains the key; trim it for display.
+  return m ? `\n\n_Details: ${m.replace(/AIza[\w-]+|sk-ant-[\w-]+/g, "[key]").slice(0, 200)}_` : "";
 }
 
 function friendly(e: unknown) {

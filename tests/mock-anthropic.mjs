@@ -18,6 +18,11 @@ createServer((req, res) => {
   req.on("end", () => {
     const b = JSON.parse(body || "{}");
     const openai = req.url.includes("chat/completions");
+    // MOCK_UNAVAILABLE=model1,model2 → answer 503 for those models (tests fallback)
+    if (openai && (process.env.MOCK_UNAVAILABLE || "").split(",").includes(b.model)) {
+      res.writeHead(503, { "content-type": "application/json" });
+      return res.end(JSON.stringify([{ error: { code: 503, message: "The model is overloaded. Please try again later.", status: "UNAVAILABLE" } }]));
+    }
     let text, results;
     if (openai) {
       // Normalise to: trailing tool messages = results, trailing user message = text

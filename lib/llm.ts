@@ -36,7 +36,8 @@ async function anthropic(req: LlmRequest): Promise<LlmResponse> {
 // ------------------------------------------------------------------ Gemini (OpenAI-compatible)
 const GEMINI_BASE = () => (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, "");
 const GEMINI_MODELS = () =>
-  (process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL] : []).concat(["gemini-flash-latest", "gemini-flash-lite-latest"]);
+  [...new Set((process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL] : []).concat(
+    ["gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]))];
 
 /** Gemini's schema support is narrower than JSON Schema: drop numeric bounds and other extras. */
 function cleanSchema(s: unknown): unknown {
@@ -91,19 +92,37 @@ function fromOpenAI(data: { choices?: { message?: { content?: string | null; too
 async function gemini(req: LlmRequest): Promise<LlmResponse> {
   const body = toOpenAI(req);
   let last: LlmError | null = null;
+  const started = Date.now();
   for (const model of GEMINI_MODELS()) {
-    const res = await fetch(`${GEMINI_BASE()}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.GEMINI_API_KEY}` },
-      body: JSON.stringify({ model, ...body }),
-    });
-    if (res.ok) return fromOpenAI(await res.json());
-    const text = await res.text();
-    last = new LlmError(`Gemini ${model}: ${res.status} ${text.slice(0, 300)}`, res.status);
-    // Try the next model only when this one is unavailable or out of free quota.
-    if (![404, 429].includes(res.status)) break;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (Date.now() - started > 40_000) break; // stay inside the serverless time limit
+      const res = await fetch(`${GEMINI_BASE()}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${process.env.GEMINI_API_KEY}` },
+        body: JSON.stringify({ model, ...body }),
+      });
+      if (res.ok) return fromOpenAI(await res.json());
+      const text = await res.text();
+      console.error(`Gemini ${model} attempt ${attempt + 1}: ${res.status} ${text.slice(0, 500)}`);
+      last = new LlmError(`Gemini ${model}: ${res.status} ${shortReason(text)}`, res.status);
+      // Overloaded: wait a moment and retry the same model once.
+      if ((res.status === 503 || res.status === 500) && attempt === 0) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+      break;
+    }
+    // Move on to the next model when this one is missing, overloaded or out of free quota.
+    if (!last || ![404, 429, 500, 503].includes(last.status ?? 0)) break;
   }
   throw last ?? new LlmError("Gemini request failed");
+}
+
+function shortReason(body: string): string {
+  try {
+    const j = JSON.parse(body);
+    const e = Array.isArray(j) ? j[0]?.error : j.error;
+    return String(e?.message ?? e?.status ?? body).slice(0, 160);
+  } catch {
+    return body.slice(0, 160);
+  }
 }
 
 // ------------------------------------------------------------------ entry point
