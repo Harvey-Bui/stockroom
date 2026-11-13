@@ -150,12 +150,25 @@ const textOf = (content: Block[]) =>
 // --------------------------------------------------------------------------- the loop
 
 async function runLoop(convId: string, messages: Message[], s: Session, reply: AgentReply): Promise<AgentReply> {
+  const deadline = Date.now() + 50_000; // Vercel cuts functions off at 60s; always answer before that
   const actor: Actor = { name: s.name, role: s.role };
   const [schema, profile] = await Promise.all([describeSchema(s.role), dataProfile(s.role)]);
   const system = systemPrompt(s, schema, profile);
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    const resp = await createMessage({ max_tokens: 2048, system, tools: tools(s.role), messages });
+    if (deadline - Date.now() < 5_000) {
+      await saveConversation(convId, messages);
+      return { ...reply, text: "That took too long to work out. Try asking a simpler or narrower question." };
+    }
+    let resp;
+    try {
+      resp = await createMessage({ max_tokens: 2048, system, tools: tools(s.role), messages, deadline });
+    } catch (e) {
+      // Keep the transcript valid for the next message: drop a dangling user turn we couldn't answer.
+      if (messages.at(-1)?.role === "user" && typeof messages.at(-1)?.content === "string") messages.pop();
+      else await saveConversation(convId, messages);
+      throw e;
+    }
     const content = resp.content.map((b) => ({ ...b })) as Block[];
     messages.push({ role: "assistant", content });
 

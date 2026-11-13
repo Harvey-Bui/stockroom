@@ -59,7 +59,9 @@ export default function Assistant({ name, role }: { name: string; role: string }
 
   async function call(url: string, body: unknown) {
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const data = await res.json().catch(() => ({ error: "Unexpected response from the server." }));
+    const data = await res.json().catch(() => ({ error: res.status === 504
+      ? "The assistant took too long to answer (the AI service may be overloaded). Try again in a moment."
+      : `Unexpected response from the server (HTTP ${res.status}).` }));
     if (res.status === 401) window.location.href = "/login";
     if (!res.ok) throw new Error(data.error || "Something went wrong.");
     return data;

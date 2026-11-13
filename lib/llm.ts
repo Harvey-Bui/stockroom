@@ -7,7 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 export type Block = Record<string, unknown> & { type: string };
 export type Message = { role: "user" | "assistant"; content: string | Block[] };
 export type Tool = { name: string; description: string; input_schema: Record<string, unknown> };
-export type LlmRequest = { system: string; tools: Tool[]; messages: Message[]; max_tokens: number };
+export type LlmRequest = { system: string; tools: Tool[]; messages: Message[]; max_tokens: number; deadline?: number };
 export type LlmResponse = { content: Block[]; stop_reason: string | null };
 
 export class LlmError extends Error {
@@ -89,19 +89,38 @@ function fromOpenAI(data: { choices?: { message?: { content?: string | null; too
   return { content, stop_reason: (msg.tool_calls?.length ?? 0) > 0 ? "tool_use" : "end_turn" };
 }
 
+// Models that just failed are skipped for a few minutes (per server instance).
+const cooldown = new Map<string, number>();
+const COOLDOWN_MS = 5 * 60_000;
+function modelsInOrder() {
+  const now = Date.now();
+  const all = GEMINI_MODELS();
+  const ok = all.filter((m) => (cooldown.get(m) ?? 0) < now);
+  return ok.length ? ok : all; // if everything is cooling down, try them all anyway
+}
+
 async function gemini(req: LlmRequest): Promise<LlmResponse> {
   const body = toOpenAI(req);
   let last: LlmError | null = null;
-  const started = Date.now();
-  for (const model of GEMINI_MODELS()) {
+  const deadline = req.deadline ?? Date.now() + 45_000;
+  for (const model of modelsInOrder()) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (Date.now() - started > 40_000) break; // stay inside the serverless time limit
-      const res = await fetch(`${GEMINI_BASE()}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${process.env.GEMINI_API_KEY}` },
-        body: JSON.stringify({ model, ...body }),
-      });
-      if (res.ok) return fromOpenAI(await res.json());
+      const left = deadline - Date.now();
+      if (left < 3_000) throw last ?? new LlmError("Gemini didn't answer in time.", 504);
+      let res: Response;
+      try {
+        res = await fetch(`${GEMINI_BASE()}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${process.env.GEMINI_API_KEY}` },
+          body: JSON.stringify({ model, ...body }),
+          signal: AbortSignal.timeout(Math.min(20_000, left - 1_000)),
+        });
+      } catch (e) {
+        console.error(`Gemini ${model} attempt ${attempt + 1}: ${(e as Error).name} ${(e as Error).message}`);
+        last = new LlmError(`Gemini ${model}: no answer (${(e as Error).name === "TimeoutError" ? "timed out" : (e as Error).message})`, 504);
+        break; // try the next model
+      }
+      if (res.ok) { cooldown.delete(model); return fromOpenAI(await res.json()); }
       const text = await res.text();
       console.error(`Gemini ${model} attempt ${attempt + 1}: ${res.status} ${text.slice(0, 500)}`);
       last = new LlmError(`Gemini ${model}: ${res.status} ${shortReason(text)}`, res.status);
@@ -110,7 +129,8 @@ async function gemini(req: LlmRequest): Promise<LlmResponse> {
       break;
     }
     // Move on to the next model when this one is missing, overloaded or out of free quota.
-    if (!last || ![404, 429, 500, 503].includes(last.status ?? 0)) break;
+    if (last && [404, 429, 500, 503, 504].includes(last.status ?? 0)) cooldown.set(model, Date.now() + COOLDOWN_MS);
+    if (!last || ![404, 429, 500, 503, 504].includes(last.status ?? 0)) break;
   }
   throw last ?? new LlmError("Gemini request failed");
 }
@@ -128,6 +148,29 @@ function shortReason(body: string): string {
 // ------------------------------------------------------------------ entry point
 let override: ((req: LlmRequest) => Promise<LlmResponse>) | null = null;
 export const __setLlm = (fn: typeof override) => { override = fn; };
+
+/** Tiny request per model, for the diagnostics page. Never returns the key. */
+export async function probeGemini() {
+  const out: { model: string; status: number | string; ms: number; reply?: string; reason?: string }[] = [];
+  for (const model of GEMINI_MODELS()) {
+    const t = Date.now();
+    try {
+      const res = await fetch(`${GEMINI_BASE()}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${process.env.GEMINI_API_KEY}` },
+        body: JSON.stringify({ model, max_tokens: 20, messages: [{ role: "user", content: "Reply with the single word: ok" }] }),
+        signal: AbortSignal.timeout(12_000),
+      });
+      const text = await res.text();
+      out.push(res.ok
+        ? { model, status: res.status, ms: Date.now() - t, reply: String(JSON.parse(text).choices?.[0]?.message?.content ?? "").slice(0, 40) }
+        : { model, status: res.status, ms: Date.now() - t, reason: shortReason(text) });
+    } catch (e) {
+      out.push({ model, status: (e as Error).name, ms: Date.now() - t, reason: (e as Error).message.slice(0, 120) });
+    }
+  }
+  return out;
+}
 
 export async function createMessage(req: LlmRequest): Promise<LlmResponse> {
   if (override) return override(req);
