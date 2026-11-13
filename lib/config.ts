@@ -1,10 +1,18 @@
 import { createHmac } from "node:crypto";
 
+function findDbUrl(): string {
+  const e = process.env;
+  const direct = e.DATABASE_URL || e.POSTGRES_URL;
+  if (direct) return direct;
+  const key = Object.keys(e).find((k) => /(DATABASE_URL|POSTGRES_URL)$/.test(k) && !/UNPOOLED|NON_POOLING/.test(k));
+  return key ? (e[key] as string) : "";
+}
+
 export type Role = "staff" | "manager" | "admin";
 export const ROLES: Role[] = ["staff", "manager", "admin"];
 
 export const config = {
-  databaseUrl: process.env.DATABASE_URL ?? "",
+  databaseUrl: findDbUrl(),
   sessionSecret: process.env.SESSION_SECRET ?? "",
   timezone: process.env.APP_TIMEZONE || "America/Chicago",
   model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",

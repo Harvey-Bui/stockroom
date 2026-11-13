@@ -8,12 +8,21 @@ import path from "node:path";
 import postgres from "postgres";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const url = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
+function findDbUrl() {
+  const e = process.env;
+  const direct = e.DATABASE_URL_UNPOOLED || e.DATABASE_URL || e.POSTGRES_URL_NON_POOLING || e.POSTGRES_URL;
+  if (direct) return direct;
+  // Vercel's Neon integration can add a custom prefix, e.g. STORAGE_DATABASE_URL.
+  const key = Object.keys(e).find((k) => /DATABASE_URL_UNPOOLED$/.test(k)) || Object.keys(e).find((k) => /(DATABASE_URL|POSTGRES_URL)$/.test(k));
+  return key ? e[key] : "";
+}
+const url = findDbUrl();
 const secret = process.env.SESSION_SECRET;
 const tz = process.env.APP_TIMEZONE || "America/Chicago";
 
 if (!url) {
   console.error("✖ DATABASE_URL is not set. Add a Neon Postgres database to the Vercel project (Storage tab) first.");
+  console.error("  Database-like variables present:", Object.keys(process.env).filter((k) => /PG|POSTGRES|DATABASE|NEON/.test(k)).join(", ") || "none");
   process.exit(1);
 }
 if (!secret || secret.length < 32) {
@@ -149,7 +158,7 @@ async function createReaders() {
 }
 
 main().catch(async (e) => {
-  console.error("✖ setup failed:", e.message);
+  console.error("✖ setup failed:", e.message, e.code ? `(code ${e.code})` : "");
   await sql.end({ timeout: 1 });
   process.exit(1);
 });
